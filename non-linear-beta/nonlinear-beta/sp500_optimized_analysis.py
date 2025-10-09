@@ -54,37 +54,32 @@ def get_sp500_from_wikipedia():
 def calculate_beta_clean(stock_data, market_data):
     """
     Calculate betas cleanly: regression of stock returns vs market returns.
+    FIXED VERSION - resolves data alignment issues.
     """
     if stock_data is None or market_data is None:
         return None
     
-    # Calculate returns
-    stock_returns = stock_data['close'].pct_change().dropna()
-    market_returns = market_data['close'].pct_change().dropna()
+    # Calculate returns - use squeeze() to ensure 1D series
+    stock_returns = stock_data['close'].pct_change().dropna().squeeze()
+    market_returns = market_data['close'].pct_change().dropna().squeeze()
 
-    # Align indexes
-    aligned_index = stock_returns.index.intersection(market_returns.index)
-    stock_returns = stock_returns.loc[aligned_index].squeeze()
-    market_returns = market_returns.loc[aligned_index].squeeze()
-
-    # Ensure both are 1D Series
-    if isinstance(stock_returns, pd.DataFrame):
-        stock_returns = stock_returns.iloc[:, 0]
-    if isinstance(market_returns, pd.DataFrame):
-        market_returns = market_returns.iloc[:, 0]
-
-    aligned_data = pd.DataFrame({
-        'stock': stock_returns,
-        'market': market_returns
-    }, index=aligned_index).dropna()
+    # Simple alignment using pandas index intersection
+    common_dates = stock_returns.index.intersection(market_returns.index)
     
-    if len(aligned_data) < 50:
+    if len(common_dates) < 50:
         return None
     
-    # Calculate traditional beta (regression coefficient)
-    # β = Cov(Ri, Rm) / Var(Rm)
-    covariance = np.cov(aligned_data['stock'], aligned_data['market'])[0,1]
-    market_variance = np.var(aligned_data['market'])
+    # Get aligned data as numpy arrays to avoid pandas issues
+    stock_aligned = stock_returns.loc[common_dates].values
+    market_aligned = market_returns.loc[common_dates].values
+    
+    # Ensure we have valid data
+    if len(stock_aligned) != len(market_aligned) or np.any(np.isnan(stock_aligned)) or np.any(np.isnan(market_aligned)):
+        return None
+    
+    # Calculate traditional beta using numpy
+    covariance = np.cov(stock_aligned, market_aligned)[0, 1]
+    market_variance = np.var(market_aligned)
     
     if market_variance == 0:
         return None
@@ -92,30 +87,31 @@ def calculate_beta_clean(stock_data, market_data):
     traditional_beta = covariance / market_variance
     
     # Split by positive/negative market days
-    positive_days = aligned_data[aligned_data['market'] > 0]
-    negative_days = aligned_data[aligned_data['market'] < 0]
+    positive_mask = market_aligned > 0
+    negative_mask = market_aligned < 0
     
-    # Calculate positive beta (regression on positive market days)
-    if len(positive_days) > 20:
-        pos_covariance = np.cov(positive_days['stock'], positive_days['market'])[0,1]
-        pos_market_variance = np.var(positive_days['market'])
-        if pos_market_variance != 0:
+    positive_days_count = np.sum(positive_mask)
+    negative_days_count = np.sum(negative_mask)
+    
+    # Calculate positive beta
+    positive_beta = None
+    if positive_days_count > 20:
+        stock_pos = stock_aligned[positive_mask]
+        market_pos = market_aligned[positive_mask]
+        pos_covariance = np.cov(stock_pos, market_pos)[0, 1]
+        pos_market_variance = np.var(market_pos)
+        if pos_market_variance > 0:
             positive_beta = pos_covariance / pos_market_variance
-        else:
-            positive_beta = None
-    else:
-        positive_beta = None
     
-    # Calculate negative beta (regression on negative market days)
-    if len(negative_days) > 20:
-        neg_covariance = np.cov(negative_days['stock'], negative_days['market'])[0,1]
-        neg_market_variance = np.var(negative_days['market'])
-        if neg_market_variance != 0:
+    # Calculate negative beta
+    negative_beta = None
+    if negative_days_count > 20:
+        stock_neg = stock_aligned[negative_mask]
+        market_neg = market_aligned[negative_mask]
+        neg_covariance = np.cov(stock_neg, market_neg)[0, 1]
+        neg_market_variance = np.var(market_neg)
+        if neg_market_variance > 0:
             negative_beta = neg_covariance / neg_market_variance
-        else:
-            negative_beta = None
-    else:
-        negative_beta = None
     
     # Calculate beta ratio
     if positive_beta is not None and negative_beta is not None and negative_beta != 0:
@@ -128,9 +124,9 @@ def calculate_beta_clean(stock_data, market_data):
         'positive_beta': positive_beta,
         'negative_beta': negative_beta,
         'beta_ratio': beta_ratio,
-        'data_points': len(aligned_data),
-        'positive_days': len(positive_days),
-        'negative_days': len(negative_days)
+        'data_points': len(common_dates),
+        'positive_days': positive_days_count,
+        'negative_days': negative_days_count
     }
 
 class OptimizedRateLimiter:

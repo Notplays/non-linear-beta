@@ -214,31 +214,15 @@ class SP500FullAnalyzer:
         return True
     
     def calculate_betas(self):
-        """Calculate traditional and nonlinear betas for all stocks."""
+        """Calculate traditional and nonlinear betas for all stocks - CORRECTED VERSION."""
         if not self.results or self.market_data is None:
             print("No data available. Run fetch_data() first.")
             return
             
         print("\nCalculating beta relationships...")
         
-        # Align all data to common dates
-        common_dates = self.market_data.index
-        for symbol in list(self.results.keys()):
-            self.results[symbol] = self.results[symbol].reindex(common_dates).dropna()
-            if len(self.results[symbol]) < 100:  # Remove stocks with insufficient data
-                del self.results[symbol]
-                continue
-            common_dates = common_dates.intersection(self.results[symbol].index)
-        
-        # Reindex all data to common dates
-        self.market_data = self.market_data.reindex(common_dates)
-        for symbol in self.results:
-            self.results[symbol] = self.results[symbol].reindex(common_dates)
-        
-        print(f"Returns calculated for {len(common_dates)} common trading days")
-        
-        # Calculate returns
-        market_returns = self.market_data['close'].pct_change().dropna()
+        # Calculate market returns once
+        market_returns = self.market_data['close'].pct_change().dropna().squeeze()
         
         beta_results = {}
         
@@ -246,37 +230,59 @@ class SP500FullAnalyzer:
             if len(data) < 100:
                 continue
                 
-            stock_returns = data['close'].pct_change().dropna()
+            # Calculate stock returns
+            stock_returns = data['close'].pct_change().dropna().squeeze()
             
-            # Align returns
-            aligned_data = pd.DataFrame({
-                'market': market_returns,
-                'stock': stock_returns
-            }).dropna()
+            # Simple alignment using index intersection
+            common_dates = stock_returns.index.intersection(market_returns.index)
             
-            if len(aligned_data) < 100:
+            if len(common_dates) < 100:
+                continue
+            
+            # Get aligned data as numpy arrays
+            stock_aligned = stock_returns.loc[common_dates].values
+            market_aligned = market_returns.loc[common_dates].values
+            
+            # Skip if we have NaN values
+            if np.any(np.isnan(stock_aligned)) or np.any(np.isnan(market_aligned)):
                 continue
                 
-            # Split by positive/negative market days
-            positive_days = aligned_data[aligned_data['market'] > 0]
-            negative_days = aligned_data[aligned_data['market'] < 0]
+            # Calculate traditional beta
+            covariance = np.cov(stock_aligned, market_aligned)[0, 1]
+            market_variance = np.var(market_aligned)
             
-            # Calculate betas
-            if len(positive_days) > 20:
-                pos_beta = np.cov(positive_days['stock'], positive_days['market'])[0,1] / np.var(positive_days['market'])
-            else:
-                pos_beta = np.nan
+            if market_variance == 0:
+                continue
                 
-            if len(negative_days) > 20:
-                neg_beta = np.cov(negative_days['stock'], negative_days['market'])[0,1] / np.var(negative_days['market'])
-            else:
-                neg_beta = np.nan
-                
-            # Traditional beta
-            trad_beta = np.cov(aligned_data['stock'], aligned_data['market'])[0,1] / np.var(aligned_data['market'])
+            trad_beta = covariance / market_variance
+            
+            # Split by market direction
+            positive_mask = market_aligned > 0
+            negative_mask = market_aligned < 0
+            
+            pos_beta = np.nan
+            neg_beta = np.nan
+            
+            # Calculate positive beta
+            if np.sum(positive_mask) > 20:
+                stock_pos = stock_aligned[positive_mask]
+                market_pos = market_aligned[positive_mask]
+                pos_cov = np.cov(stock_pos, market_pos)[0, 1]
+                pos_var = np.var(market_pos)
+                if pos_var > 0:
+                    pos_beta = pos_cov / pos_var
+                    
+            # Calculate negative beta
+            if np.sum(negative_mask) > 20:
+                stock_neg = stock_aligned[negative_mask]
+                market_neg = market_aligned[negative_mask]
+                neg_cov = np.cov(stock_neg, market_neg)[0, 1]
+                neg_var = np.var(market_neg)
+                if neg_var > 0:
+                    neg_beta = neg_cov / neg_var
             
             # Beta ratio (positive/negative)
-            if neg_beta != 0 and not np.isnan(neg_beta) and not np.isnan(pos_beta):
+            if not np.isnan(pos_beta) and not np.isnan(neg_beta) and neg_beta != 0:
                 beta_ratio = pos_beta / neg_beta
             else:
                 beta_ratio = np.nan
@@ -286,8 +292,8 @@ class SP500FullAnalyzer:
                 'positive_beta': pos_beta,
                 'negative_beta': neg_beta,
                 'beta_ratio': beta_ratio,
-                'positive_days': len(positive_days),
-                'negative_days': len(negative_days)
+                'positive_days': np.sum(positive_mask),
+                'negative_days': np.sum(negative_mask)
             }
             
             print(f"{symbol}: Trad β={trad_beta:.3f}, Pos β={pos_beta:.3f}, Neg β={neg_beta:.3f}, Ratio={beta_ratio:.3f}")
