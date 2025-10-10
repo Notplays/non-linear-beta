@@ -5,3 +5,5 @@ cd nonlinear-beta
 python sp500_wikipedia_scraper.py
 python sp500_optimized_analysis.py
 python regenerate_charts_only.py
+
+python generate_sp500_weekly_methodology.py
